@@ -1,172 +1,84 @@
-
-#' Main Wrapper function
-#'
-#'@param data The data frame comparing the text vector as the first column
-#'  and any metadata in subsequent columns
-#'@details Calls the two main components, the clustering function and the
-#'comparing function
-#'@export
-cluster_compare <- function(data, groups, num_clusters = n_clusters, stopwords = standard_stopwords){
-  cluster_text(data, num_clusters)
-  compare_clusters(groups)
-}
-
 #' Cluster wrapper function
 #'
 #'@param data The data frame comparing the text vector as the first column
-#'  and any metadata in subsequent columns
+#'@param ... Additional columns of the data frame containing metadata cfor comparison
+#'@param n_clusters The number of clusters to be used for the clustering solution
+#'@param minimum_term_frequency The minimum number of occurances for a term to be included
+#'@param min_terms The minimum number of terms for a document to be included
+#'@param num_terms Number of terms to display in clustering summary output
+#'@param stopwords Additional stopwords to exclude from clustering analysis
 #'@details Performs the clustering half of the process, including assembling
 #'  and cleaning the corpus, deviationalizing and clustering.
 #'@export
-cluster_text <- function(data, num_clusters){
-  assemble_corpus()
-  clean_dfm()
-  deviationalize()
-  cluster()
+cluster <- function(data, ..., n_clusters, minimum_term_frequency = 3, min_terms = 3, num_terms = 10, stopwords = NULL){
+  standard_stopwords <- c("a", "an", "the", "to", "of", "and", "for", "by", "on", "is", "I", "all", "this", "with",
+                          "it", "at", "from", "or", "you", "as", "your", "are", "be", "that", "not", "have", "was",
+                          "we", "what", "which", "there", "they", "he", "she", "his", "hers", "had", "word", "our",
+                          "you", "about", "that", "this", "but", "not", "what")
+  additional_stopwords <- stopwords
+  if(!is.null(additional_stopwords)){
+  all_stopwords <- append(standard_stopwords, additional_stopwords)
+  } else {
+    all_stopwords <- standard_stopwords
+  }
+  corpus <- assemble_corpus(data, ..., stopwords = all_stopwords)
+  cleanDFM <- clean_dfm(corpus, minimum_term_frequency, min_terms)
+  compare_frame <- process_cutdata(data, corpus, min_terms)
+  devVects <- deviationalize(cleanDFM)
+  clusters <- cluster_text(devVects$MAT, devVects$DEV_MAT, n_clusters, cleanDFM, num_terms)
+  results <- invisible(list(cluster = clusters, compare = compare_frame))
+  results
 }
 
 #' Compare wrapper function
 #'
-#'@param groups The groupings used for the comparison
-#'@details Performs the comparing half of the process.
-#'@export
-compare_clusters <- function(groups){
-  compare()
-}
-
-n_clusters <- 6
-minimum_groups <- 2 # minimum groups a term has to be in for it to be included
-minimum_term_frequency <- 4 # minimum times a term has to occur overall for it to be included
-min_terms <- 2 # minimum terms in a document for it to be included
-term <- "purpose"
-
-standard_stopwords <- c("a", "an", "the", "to", "of", "and", "for", "by", "on", "is", "I", "all", "this", "with",
-                        "it", "at", "from", "or", "you", "as", "your", "are", "be", "that", "not", "have", "was",
-                        "we", "what", "which", "there", "they", "he", "she", "his", "hers", "had", "word", "our",
-                        "you", "about", "that", "this", "but", "not", "what")
-
-# Additional stopwords
-
-additional_stopwords <- c("lorum")
-
-# Combine standard and additional stopwords
-
-all_stopwords <- append(standard_stopwords, additional_stopwords)
-
-#' First corpus building function
+#' @param compare_which A factor variable of the groups of interest for comparison.
+#' @param clustering_solution The output from the \code{cluster} function.
+#' @param which_clusters Clusters to be included in the comparison. Default is all clusters.
+#' @param which_groups Levels of the grouping factor to be included in the comparison. Default is all levels.
 #'
-#' @param dataset The data from which the corpus is drawn with documents in
-#'  first column
-#' @param ... The metadata columns following the text column
-#' @details Puts together the corpus and dfm from the data frame provided
+#' @details Function for comparing clustering solution between subgroups.  Output is contingency table for the specified groups and clusters.
 #' @export
-assemble_corpus <- function(dataset, ...){
-  corpus_frame <- dplyr::select(dataset, ...)
-  text_vector <- as.character(corpus_frame[,1])
-  dfm <- quanteda::dfm(text_vector, removeTwitter = T, stem = T, ignoredFeatures = all_stopwords)
-  a_corp <- quanteda::corpus(text_vector)
-  quanteda::metadoc(a_corp) <- corpus_frame[,2:ncol(corpus_frame)]
-  results = list(Corpus = a_corp, DFM = dfm)
-  invisible(results)
-}
-
-#' Cleans the DFM based on specified term minimums
-#'
-#' @param corpus A corpus opject as created by \code{assemble_corpus}.
-#' @details Removes terms and documents that don't meet term and doc minimums
-#' @export
-clean_dfm <- function(corp){
-  term_sums <- colSums(as.matrix(corp$DFM))
-  term_logical <- term_sums >= minimum_term_frequency
-  doc_sums <- rowSums(as.matrix(corp$DFM))
-  doc_logical <- doc_sums >= min_terms
-  cleaned_dfm <- corp$DFM[doc_logical, term_logical]
-  cleaned_dfm
-}
-
-#recorrect term outliers after document outliers have been removed
-
-vect_project <- function(a,b){
-  project <- crossprod(a,b) * b
-  project
-}
-
-dev_vector <- function(vect_list){
-  norm_vects <- lapply(vect_list, normalize.vector)
-  sum_vect <- colSums(do.call(rbind, norm_vects))
-  norm_sum <- normalize.vector(sum_vect)
-  projects <- lapply(norm_vects, vect_project, norm_sum)
-  difference <- mapply('-', norm_vects, projects)
-  dev_vects <-  apply(difference, MARGIN = 2, FUN = normalize.vector)
-  dev_vects
-}
-
-#' Deviationalizes term vectors using Sherin's (2013) technique
-#'
-#' @param cleaned_dfm A clean dfm object as created by \code{clean_dfm}
-#' @details Turns term vectors into deviation vectors.  This turns the
-#'  magnitude of each vector into a representation of its distance from
-#'  the centroid, rather than its absolute direction.
-#'  @export
-deviationalize <- function(cleaned_dfm){
-  cleaned_dfm_mat <- as.matrix(cleaned_dfm)
-  cleaned_dfm_mat_t <- t(cleaned_dfm_mat)
-  list_dfm_mat <- apply(cleaned_dfm_mat_t, 2, list)
-  mat_vec <- lapply(list_dfm_mat, unlist)
-  mat_dev <- dev_vector(mat_vec)
-  results = list(MAT = cleaned_dfm_mat_t, DEV_MAT = mat_dev)
-}
-
-#' Clusters the vectors using 2-stage clustering algorithm
-#'
-#' @param mat The clean dfm as a matrix and transposed, from \code{deviationalize}
-#' @param dev_mat The deviation matrix of the dfm, from \code{deviationalize}
-#' @details Applies 2 stage clustering algorithm, using Ward's method for
-#'  hierarchical agglomerative clustering to set the centers for the specified
-#'  number of clusters.  K-means algorithm uses these centers as a starting
-#'  point and fits its model.
-#'  @export
-cluster <- function(mat, dev_mat){
-  wss <- list()
-  for (i in 2:18){
-    wss[i] <- sum(kmeans(mat, centers = i)$betweenss) / kmeans(mat, centers = i)$totss
-  }
-  dev_mat_t <- t(dev_mat)
-
-  distance <- dist(dev_mat_t, method = "euclidean")
-  mat_dev_t_clust <- hclust(distance)
-  hclust_cut <- cutree(mat_dev_t_clust, n_clusters)
-
-  clusters1 <- list()
-  for (i in seq(n_clusters)){
-    clusters1[[i]] <- dev_mat_t[hclust_cut == i,]
-  }
-
-  ordered_clusters1 <- list()
-  cluster_freqs1 <- list()
-  for (i in seq(length(clusters1))){
-    ordered_clusters1[[i]] <- colSums(as.matrix(clusters1[[i]]) / nrow(clusters1[[i]]))
-    cluster_freqs1[[i]] <- ordered_clusters1[[i]]
-  }
-
-  start <- data.frame(matrix(unlist(cluster_freqs1), nrow=length(cluster_freqs1[[1]]), byrow=T), stringsAsFactors=FALSE)
-  start <- as.matrix(start)
-  start <- t(start)
-  kfit <- kmeans(dev_mat_t, start)
-  ss_explained <- sum(kfit$betweenss) / kfit$totss
-  cluster_words <- list()
-  for (i in 1:n_clusters){
-    #### need to work on this next
-    words <- mat[,kfit$cluster == i]
-    cluster_words[i] <- colnames(mat)[words]
-  }
-  cluster_words
-}
-
-#' Compare the clusters to groups (model fit)
-#'
-#' @details Comparing function
-#' @export
-compare <- function(){
+compare <- function(clustering_solution, compare_which, which_clusters, which_groups){
   # Compare specified groups based on cluster frequencies
+  # chi square differences for the groups
+  clusters <- clustering_solution$cluster$clusters$cluster
+  comparison_table <- table(clusters, eval(parse(text = paste("clustering_solution$compare", compare_which, sep = "$"))), dnn = c("clusters", deparse(substitute(compare_which))))
+  invisible(comparison_table[which_clusters, which_groups])
 }
+
+#' Compare plot function
+#'
+#' @param comparison_table The table output from the \code{compare} function
+#' @details Creates a plot visualizing group clustering differences across the groups and clusters specified in the \code{compare} function. Creates a \code{ggplot} object, so default parameters can be overridden by adding layers to this object.
+#' @export
+compare_plot <- function(comparison_table){
+  comparison_table <- for_out
+  to_plot <- t(t(comparison_table)/colSums(comparison_table))
+  to_plot <- as.data.frame(to_plot)
+  to_plot <- tidyr::gather(to_plot, Group, Proportion)
+  to_plot$Cluster <- rep(1:nrow(comparison_table), ncol(comparison_table))
+  plot <- ggplot2::ggplot(to_plot, ggplot2::aes(x = Group, y = Proportion, color = factor(Cluster), ymax = max(Proportion))) +
+    ggplot2::geom_line(ggplot2::aes(group = factor(Cluster)), size = .75) +
+    ggplot2::geom_point() +
+    ggplot2::theme_minimal() +
+    ggplot2::ylab("Proportion of Responses") +
+    ggplot2::xlab("Cluster")
+  plot
+}
+
+#' Compare test function
+#'
+#' @param comparison_table The table output from the \code{compare} function
+#'
+#' @details Performs a chi-squared test across the groups and clusters specified in the \code{compare} function. Output gives omnibus test results and a table indicating significant individual chi-squared differences.
+#' @export
+compare_test <- function(comparison_table){
+  chisq_p <- chisq.test(comparison_table)
+  chisq_p$stdres[chisq_p$stdres > 1.96] <- "Sig. Greater"
+  chisq_p$stdres[chisq_p$stdres < -1.96] <- "Sig. Lesser"
+  chisq_p$stdres[chisq_p$stdres < 1.96 & chisq_p$stdres > -1.96] <- "Not Sig."
+  results <- list(chisq_p, chisq_p$stdres)
+  results
+}
+
